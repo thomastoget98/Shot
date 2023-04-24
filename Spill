@@ -1,0 +1,199 @@
+import RPi.GPIO as GPIO
+import time
+import random
+import sqlite3
+import matplotlib.pyplot as plt
+import csv
+
+
+
+# GPIO-pinner som brukes til LED-er og stepper-motor
+led_pins = [19, 26, 21, 24, 25, 20]
+stepper_pins = [17, 27, 22, 23]
+transistor_pin = 13
+
+# Sekvens for å styre stepper-motoren
+seq = [
+    [1, 0, 0, 1],
+    [1, 0, 0, 0],
+    [1, 1, 0, 0],
+    [0, 1, 0, 0],
+    [0, 1, 1, 0],
+    [0, 0, 1, 0],
+    [0, 0, 1, 1],
+    [0, 0, 0, 1]
+]
+
+# Funksjon for å sette en bestemt kombinasjon av GPIO-pinner høye eller lave for å styre stepper-motoren
+def set_step(w1, w2, w3, w4):
+    GPIO.output(stepper_pins, [w1, w2, w3, w4])
+
+# Funksjon for å tenne en bestemt LED
+def light_up_led(led_pin):
+    GPIO.output(led_pins, False)
+    GPIO.output(led_pin, True)
+
+# Funksjon for å blinke LED-ene i en sekvens
+def blink_sequence(duration, interval):
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        for pin in led_pins:
+            light_up_led(pin)
+            time.sleep(interval)
+            GPIO.output(pin, False)
+
+# Funksjon for å blinke alle LED-ene samtidig
+def blink_all(duration, interval):
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        GPIO.output(led_pins, True)
+        time.sleep(interval)
+        GPIO.output(led_pins, False)
+        time.sleep(interval)
+        
+def reset_total_shots():
+    conn = sqlite3.connect("shots.db")
+    c = conn.cursor()
+    for i in range(1, 7):
+        c.execute("UPDATE participants SET shots = 0 WHERE participant_id = ?", (i,))
+    conn.commit()
+    conn.close()
+
+
+
+# Funksjon for å initialisere databasen og legge til deltakere
+def init_db():
+    conn = sqlite3.connect("shots.db")
+    c = conn.cursor()
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS participants (participant_id INTEGER PRIMARY KEY, shots INTEGER)"
+    )
+    for i in range(1, 7):
+        c.execute("INSERT OR IGNORE INTO participants VALUES (?, 0)", (i,))
+    conn.commit()
+    conn.close()
+
+# Funksjon for å oppdatere antall shots for en deltaker i databasen
+def update_shots(participant_id):
+    conn = sqlite3.connect("shots.db")
+    c = conn.cursor()
+    c.execute("UPDATE participants SET shots = shots + 1 WHERE participant_id = ?", (participant_id,))
+    conn.commit()
+    conn.close()
+
+# Funksjon for å hente ut antall shots for alle deltakere fra databasen
+def get_total_shots():
+    conn = sqlite3.connect("shots.db")
+    c = conn.cursor()
+    c.execute("SELECT participant_id, shots FROM participants")
+    result = c.fetchall()
+    conn.close()
+    return result
+
+
+# Funksjon for å plotte totalt antall shots per deltaker
+def plot_total_shots(total_shots):
+    plt.clf()  # Clear the current figure (if any)
+
+    participant_ids = [row[0] for row in total_shots]
+    shots = [row[1] for row in total_shots]
+
+    plt.bar(participant_ids, shots)
+    plt.xlabel('Participant ID')
+    plt.ylabel('Number of Shots')
+    plt.title('Total Shots per Participant')
+    plt.xticks(participant_ids)
+    plt.ion()  # Turn on interactive mode
+    plt.show()
+    plt.draw()  # Redraw the current figure
+    plt.pause(0.001)  # Add a short pause to allow the window to update
+    
+    
+    
+# Initialiser databasen
+init_db()
+
+# Sett opp GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(led_pins + stepper_pins + [transistor_pin], GPIO.OUT)
+
+
+
+# Beregn antall steg for å flytte til den valgte LED-en
+point_shift_degrees = [30, 95, 155, 155, 90, 30]
+led_steps = [int(degrees * (50 / 360)) % 50 for degrees in point_shift_degrees]
+
+# Blink LED-ene i en sekvens
+blink_sequence(1, 0.1)
+# Blink alle LED-ene samtidig
+blink_all(1, 0.1)
+
+# Velg en tilfeldig LED som målet
+target_point = random.choice(range(1, 7))
+
+# Legg til data i CSV-filen
+with open('shot_data_with_headers.csv', 'a') as f:
+    current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    writer = csv.writer(f)
+    writer.writerow(["Hvem fikk shot?"])
+    writer.writerow([target_point])
+
+# Varighet for pumpingen
+pump_duration = 0.5
+
+try:
+    # Tenn LED-en som representerer målet
+    light_up_led(led_pins[target_point - 1])
+    time.sleep(1)
+
+    # Beregn antall steg som trengs for å nå målet
+    steps = led_steps[target_point - 1]
+    seq_to_use = seq if target_point <= 3 else seq[::-1]
+
+    # Beveg stepper-motoren til målet
+    for i in range(steps):
+        for j in range(8):
+            set_step(*seq_to_use[j])
+            time.sleep(0.01)
+    time.sleep(1)
+
+    # Pumpe i en bestemt tid
+    GPIO.output(transistor_pin, True)
+    time.sleep(pump_duration)
+    GPIO.output(transistor_pin, False)
+    time.sleep(1)
+
+    # Beveg stepper-motoren tilbake til startposisjonen
+    for i in range(steps):
+        for j in range(8):
+            set_step(*seq_to_use[::-1][j])
+            time.sleep(0.01)
+
+    # Slå av alle GPIO-pinnene
+    GPIO.output(led_pins + stepper_pins, False)
+
+    # Oppdater antall shots for den valgte deltakeren
+    update_shots(target_point)
+    total_shots = get_total_shots()
+    print("Total shots per participant:")
+    for participant_id, shots in total_shots:
+        print(f"Participant {participant_id}: {shots} shots")
+
+    # Write data to CSV file
+    with open('shot_data_with_headers.csv', 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Tidspunkt','', 'Fikk shot', 'Totalt'])
+
+        current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        for i in range(1, 7):
+            
+            got_shot = 1 if i == target_point else 0
+            writer.writerow([current_time if i == 1 else '', f"spiller {i}", got_shot, total_shots[i - 1][1]])
+
+
+    plot_total_shots(total_shots)
+
+finally:
+    GPIO.cleanup()
+
+
