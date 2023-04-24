@@ -1,0 +1,38 @@
+import RPi.GPIO as GPIO
+import time
+
+pump_pin = 13
+button_pin = 8
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(pump_pin, GPIO.OUT)
+GPIO.setup(button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+pump = GPIO.PWM(pump_pin, 100)  # Initialize PWM on the pump pin with a frequency of 100Hz
+pump.start(0)  # Start PWM with a 0% duty cycle (off)
+
+pump_end_time = None
+pump_running = False
+
+try:
+    while True:
+        button_state = GPIO.input(button_pin)
+
+        if not button_state and not pump_running:  # Button is pressed (LOW) and pump is not running
+            pump_running = True
+            duty_cycle = 50
+            pump.ChangeDutyCycle(duty_cycle)
+            pump_end_time = time.time() + 5  # Set the pump end time to 5 seconds from now
+
+        if pump_running and time.time() > pump_end_time:  # Pump has been running for 5 seconds
+            duty_cycle = 0
+            pump.ChangeDutyCycle(duty_cycle)
+            pump_end_time = None
+            pump_running = False
+
+        time.sleep(0.1)
+
+finally:
+    pump.stop()  # Stop the PWM
+    GPIO.cleanup()
+
